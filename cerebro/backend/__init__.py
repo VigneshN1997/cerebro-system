@@ -20,5 +20,7 @@ This module contains different execution backends for Cerebro.
 """
 
 from .spark.backend import SparkBackend
+from .dask.backend import DaskBackend
 
 SparkBackend.__module__ = "cerebro.backend"
+DaskBackend.__module__ = "cerebro.backend"
