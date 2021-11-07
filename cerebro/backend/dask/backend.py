@@ -9,19 +9,14 @@ import random
 import numpy as np
 import dask.dataframe as dd
 import os
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 import pandas as pd
 import tensorflow as tf
 import shutil
 
-
-
-
 from .. import constants
 from ..backend import Backend
-
-
-
+from .utils import train_model
 
 class DaskBackend(Backend):
     """Dask backend implementing Cerebro model hopping
@@ -38,54 +33,20 @@ class DaskBackend(Backend):
         :param verbose: Debug output verbosity (0-2). Defaults to 1.
     """
 
-    def __init__(self, spark_context=None, num_workers=None, start_timeout=600, disk_cache_size_gb=10,
-                 data_readers_pool_type='thread', num_data_readers=10,
-                 nics=None, verbose=1):
+    def __init__(self, num_workers=None, num_models=None, checkpoint_base_path=None, verbose=1):
 
-        '''
-        tmout = timeout.Timeout(start_timeout,
-                                message='Timed out waiting for {activity}. Please check that you have '
-                                        'enough resources to run all Cerebro processes. Each Cerebro '
-                                        'process runs in a Spark task. You may need to increase the '
-                                        'start_timeout parameter to a larger value if your Spark resources '
-                                        'are allocated on-demand.')
-        settings = spark_settings.Settings(verbose=verbose,
-                                           key=secret.make_secret_key(),
-                                           timeout=tmout,
-                                           disk_cache_size_bytes=disk_cache_size_gb * constants.BYTES_PER_GIB,
-                                           data_readers_pool_type=data_readers_pool_type,
-                                           num_data_readers=num_data_readers,
-                                           nics=nics)
-        '''
-        # if spark_context is None:
-        #     spark_context = pyspark.SparkContext._active_spark_context
-        #     if spark_context is None:
-        #         raise Exception('Could not find an active SparkContext, are you '
-        #                         'running in a PySpark session?')
-        # self.spark_context = spark_context
-        self.dask_client = Client(n_workers=num_workers)
+        self.client = Client(n_workers=num_workers)
+        print("Client dashboard: ",self.client.dashboard_link)
         self.num_workers = num_workers
-        # if num_workers is None:
-        #     num_workers = spark_context.defaultParallelism
-        #     if settings.verbose >= 1:
-        #         print('CEREBRO => Time: {}, Running {} Workers (inferred from spark.default.parallelism)'.format(
-        #             datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), num_workers))
-        # else:
-        #     if settings.verbose >= 1:
-        #         print('CEREBRO => Time: {}, Running {} Workers'.format(datetime.datetime.now().strftime(
-        #             "%Y-%m-%d %H:%M:%S"), num_workers))
+        self.num_models = num_models
+        self.checkpoint_base_path = checkpoint_base_path
 
-        # settings.num_workers = num_workers
-        # self.settings = settings
         self.verbose = verbose
         if self.verbose >= 1:
                 print('CEREBRO-Dask => Time: {}, Running {} Workers'.format(datetime.datetime.now().strftime(
                     "%Y-%m-%d %H:%M:%S"), self.num_workers))
         self.workers_initialized = False
         self.task_clients = None
-        # self.driver = None
-        # self.driver_client = None
-        # self.spark_job_group = None
         self.data_loaders_initialized = False
         self.worker_id_ip_dict = {}
         self.rand = np.random.RandomState(constants.RANDOM_SEED)
@@ -98,40 +59,35 @@ class DaskBackend(Backend):
     def initialize_workers(self):
         """Initialize workers (get worker IPs)"""
         all_worker_details = self.client.scheduler_info()['workers']
+#         print("helloo" + str(all_worker_details))
         for ip in all_worker_details:
             self.worker_id_ip_dict[all_worker_details[ip]['id']] = str(ip)
+            
+        self.workers_initialized = True
 
     def initialize_data_loaders(self, store, schema_fields):
         """Initialize data loaders"""
-        print('Workers are initialized')
+        
+        if self.workers_initialized:
+            self.model_worker_stat_dict = [[False for i in range(self.num_models)] for j in range(self.num_workers)]
+            self.models_to_build = set()
+            for i in range(self.num_models):
+                self.models_to_build.add(i)
 
-    def get_basic_model(self, numeric_features):
-#     normalizer = tf.keras.layers.Normalization(axis=-1)
-#     normalizer.adapt(numeric_features)
-        model = tf.keras.Sequential([
-        tf.keras.layers.Dense(10, activation='relu'),
-        tf.keras.layers.Dense(10, activation='relu'),
-        tf.keras.layers.Dense(1)
-    ])
-        model.compile(optimizer='adam',
-                    loss=tf.keras.losses.BinaryCrossentropy(from_logits=True),
-                    metrics=['accuracy'])
-        return model
+            self.model_worker_run_dict = {}
+            self.worker_model_run_dict = {}
 
-    def train_model(self, model_checkpoint_file, data_ddf):
-        numeric_feature_names = ['age', 'thalach', 'trestbps',  'chol', 'oldpeak']
-        pd_df = data_ddf.compute()
-        target = pd_df.pop('target')
-        numeric_features = pd_df[numeric_feature_names]
-        tf.convert_to_tensor(numeric_features)
-        model = self.get_basic_model(numeric_features)
-        if(os.path.isfile(model_checkpoint_file)):
-            model.load_weights(model_checkpoint_file)
-        model.fit(numeric_features, target, epochs=1, batch_size=2)
-        model.save_weights(model_checkpoint_file)
+            for i in range(self.num_models): # mapping from model number to worker number and its future
+                self.model_worker_run_dict[i] = [None, None]
+
+            for i in range(self.num_workers):# mapping from worker number to model number and its future
+                self.worker_model_run_dict[i] = [None, None]
+    
+            self.data_loaders_initialized = True
+            print('Workers are initialized')
 
     def create_model_checkpoint_paths(self, n_models):
-        checkpoint_base_path = '/Users/vignesh/Desktop/data/checkpoints/'
+        checkpoint_base_path = self.checkpoint_base_path
         model_checkpoint_paths = []
         for i in range(n_models):
             model_path = checkpoint_base_path + 'model_' + str(i)
@@ -139,10 +95,18 @@ class DaskBackend(Backend):
                 shutil.rmtree(model_path)
             os.mkdir(model_path)
             checkpoint_path = model_path + "/" + "cp.ckpt"
-    #         print(model_path)
             model_checkpoint_paths.append(checkpoint_path)
         return model_checkpoint_paths
-
+    
+    # for a worker get a runnable model
+    def get_runnable_model(self, models, model_worker_run_dict, model_worker_stat_dict, w):
+        runnable_model = -1
+        for i in range(len(models)):
+            if((not self.model_worker_stat_dict[w][i])):
+                if(self.model_worker_run_dict[i][1] is None):
+                    runnable_model = i
+                    break        
+        return runnable_model
 
     def train_for_one_epoch(self, models, store, feature_col, label_col, is_train=True):
         """
@@ -154,15 +118,49 @@ class DaskBackend(Backend):
         :param label_col: single list of label columns common for all models or a dictionary of label lists indexed by model id.
         :param is_train:
         """
-        print('Yet to implement train_for_one_epoch')
+        self.initialize_data_loaders('','')
+        self.model_checkpoint_paths = self.create_model_checkpoint_paths(self.num_models)
+        
+        while(len(self.models_to_build) > 0):
+            for w in range(self.num_workers):
+                if(self.worker_model_run_dict[w][1] == None):
+                    m = self.get_runnable_model(self.model_checkpoint_paths, self.model_worker_run_dict, self.model_worker_stat_dict, w)
+                    if (m != -1):
+                        print('running model:' + self.model_checkpoint_paths[m] + ' on worker:' + str(w))
+                        future = self.client.submit(train_model, self.model_checkpoint_paths[m], self.data_mapping['data_w'+str(w)], workers=self.worker_id_ip_dict[w])
+                        self.model_worker_run_dict[m] = [w, future]
+                        self.worker_model_run_dict[w] = [m, future]
+                        print('model assigned:' + str(m) + ' on worker:' + str(w) + ' status:' + future.status)
+                else:
+                    m = self.worker_model_run_dict[w][0]
+                    fut = self.worker_model_run_dict[w][1]
+                    if(fut.status == 'finished'):
+                        print('done model:' + str(m) + ' on worker:' + str(w))
+                        self.model_worker_stat_dict[w][m] = True
+                        print('m:' + str(m) + ' val:' + str(self.model_checkpoint_paths[m]))
+                        self.worker_model_run_dict[w] = [None, None]
+                        self.model_worker_run_dict[m] = [None, None]
+                        model_done = True
+                        for i in range(self.num_workers):
+                            if(not self.model_worker_stat_dict[i][m]):
+                                model_done = False
+                                break
+                        if(model_done):
+                            self.models_to_build.remove(m)        
+        print('Implemented train_for_one_epoch')
+        return []
 
     def teardown_workers(self):
         """Teardown workers"""
+#         self.client.shutdown()
         print('Yet to implement teardown_workers')
 
     def send_data(self, partitioned_dfs):
-        for d in range(self.n_workers):
+        #print(self.worker_id_ip_dict)
+        for d in range(self.num_workers):
+        #    print("D: ",d," N_workers: ",self.num_workers," Partition: ",partitioned_dfs[d]," IP Dict: ",self.worker_id_ip_dict[d]) 
             self.data_mapping["data_w{0}".format(d)] = self.client.scatter(partitioned_dfs[d], workers=self.worker_id_ip_dict[d])
+        #print(self.data_mapping)
 
     def prepare_data(self, store, dataset, validation, compress_sparse=False, verbose=2):
         """
@@ -173,14 +171,12 @@ class DaskBackend(Backend):
         :param compress_sparse:
         :param verbose:
         """
-        # print('Yet to implement prepare_data')
-        df = dd.read_csv(dataset)
         part_fracs = [1/self._num_workers() for i in range(self._num_workers())]
-        partitioned_dfs = df.random_split(part_fracs, random_state=0)
+        partitioned_dfs = dataset.random_split(part_fracs, random_state=0)
         self.send_data(partitioned_dfs)
-
-
-
+        self.features = list(dataset.columns)[:-1]
+        self.target = list(dataset.columns)[-1]
+        return {}, {}, {}, {}
 
     def get_metadata_from_parquet(self, store, label_columns=['label'], feature_columns=['features']):
         """

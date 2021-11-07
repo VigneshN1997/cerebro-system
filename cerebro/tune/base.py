@@ -180,24 +180,30 @@ class ModelSelection(object):
         :param df: Input DataFrame
         :return: cerebro.tune.ModelSelectionResult
         """
-        if self.verbose >= 1: print(
-            'CEREBRO => Time: {}, Preparing Data'.format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        _, _, metadata, _ = self.backend.prepare_data(self.store, df, self.validation)
 
         if self.verbose >= 1: print(
             'CEREBRO => Time: {}, Initializing Workers'.format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         # initialize backend and data loaders
         self.backend.initialize_workers()
+        print("Data workers initialized")
+        
+        if self.verbose >= 1: print(
+            'CEREBRO => Time: {}, Preparing Data'.format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        _, _, metadata, _ = self.backend.prepare_data(self.store, df, self.validation)
+        print("Data preparation done")
 
+        
         if self.verbose >= 1: print(
             'CEREBRO => Time: {}, Initializing Data Loaders'.format(
                 datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         self.backend.initialize_data_loaders(self.store, self.feature_cols + self.label_cols)
+        print("Data loaders initialized")
 
         try:
             if self.verbose >= 1: print('CEREBRO => Time: {}, Launching Model Selection Workload'.format(
                 datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
             result = self._fit_on_prepared_data(metadata)
+            print("Called fit on prepared data")
             return result
         finally:
             # teardown the backend workers
@@ -219,11 +225,13 @@ class ModelSelection(object):
         if self.verbose >= 1: print(
             'CEREBRO => Time: {}, Initializing Workers'.format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         self.backend.initialize_workers()
+        print("Workers initialized")
 
         if self.verbose >= 1: print(
             'CEREBRO => Time: {}, Initializing Data Loaders'.format(
                 datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         self.backend.initialize_data_loaders(self.store, self.feature_cols + self.label_cols)
+        print("Data loaders initialized")
 
         try:
             if self.verbose >= 1: print('CEREBRO => Time: {}, Launching Model Selection Workload'.format(
