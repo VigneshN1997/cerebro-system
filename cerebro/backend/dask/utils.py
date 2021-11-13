@@ -2,6 +2,7 @@ import tensorflow as tf
 import os
 
 def get_basic_model(numeric_features):
+    print("calling get basic model")
     model = tf.keras.Sequential([
     tf.keras.layers.Dense(10, input_dim=10, activation='relu'),
     tf.keras.layers.Dense(10, activation='relu'),
@@ -13,6 +14,7 @@ def get_basic_model(numeric_features):
     return model
 
 def train_model(model_checkpoint_file, data_ddf):
+    print("calling train_model for model:" + str(model_checkpoint_file))
     numeric_feature_names = list(data_ddf.columns)[:10]
     pd_df = data_ddf.compute()
     target = pd_df.pop(list(data_ddf.columns)[-1])

@@ -33,9 +33,11 @@ class DaskBackend(Backend):
         :param verbose: Debug output verbosity (0-2). Defaults to 1.
     """
 
-    def __init__(self, num_workers=None, num_models=None, checkpoint_base_path=None, verbose=1):
-
-        self.client = Client(n_workers=num_workers)
+    def __init__(self, num_workers=None, num_models=None, checkpoint_base_path=None, verbose=1, dask_cluster=None):
+        if(dask_cluster is not None):
+            self.client = Client(dask_cluster)
+        else:
+            self.client = Client(n_workers=num_workers)
         print("Client dashboard: ",self.client.dashboard_link)
         self.num_workers = num_workers
         self.num_models = num_models
@@ -156,7 +158,7 @@ class DaskBackend(Backend):
         print('Yet to implement teardown_workers')
 
     def send_data(self, partitioned_dfs):
-        #print(self.worker_id_ip_dict)
+        print(self.worker_id_ip_dict)
         for d in range(self.num_workers):
         #    print("D: ",d," N_workers: ",self.num_workers," Partition: ",partitioned_dfs[d]," IP Dict: ",self.worker_id_ip_dict[d]) 
             self.data_mapping["data_w{0}".format(d)] = self.client.scatter(partitioned_dfs[d], workers=self.worker_id_ip_dict[d])
