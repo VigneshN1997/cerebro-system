@@ -196,7 +196,7 @@ class ModelSelection(object):
         if self.verbose >= 1: print(
             'CEREBRO => Time: {}, Initializing Data Loaders'.format(
                 datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        self.backend.initialize_data_loaders(self.store, self.feature_cols + self.label_cols)
+#         self.backend.initialize_data_loaders(self.store, self.feature_cols + self.label_cols)
         print("Data loaders initialized")
 
         try:

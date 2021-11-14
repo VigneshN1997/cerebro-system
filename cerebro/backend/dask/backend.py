@@ -33,7 +33,7 @@ class DaskBackend(Backend):
         :param verbose: Debug output verbosity (0-2). Defaults to 1.
     """
 
-    def __init__(self, num_workers=None, num_models=None, checkpoint_base_path=None, verbose=1, dask_cluster=None):
+    def __init__(self, num_workers=None, num_models=None, checkpoint_base_path=None, verbose=1, dask_cluster=None, estimator_gen_fn=None):
         if(dask_cluster is not None):
             self.client = Client(dask_cluster)
         else:
@@ -42,7 +42,7 @@ class DaskBackend(Backend):
         self.num_workers = num_workers
         self.num_models = num_models
         self.checkpoint_base_path = checkpoint_base_path
-
+    
         self.verbose = verbose
         if self.verbose >= 1:
                 print('CEREBRO-Dask => Time: {}, Running {} Workers'.format(datetime.datetime.now().strftime(
@@ -53,6 +53,7 @@ class DaskBackend(Backend):
         self.worker_id_ip_dict = {}
         self.rand = np.random.RandomState(constants.RANDOM_SEED)
         self.data_mapping = {}
+        self.estimator_gen_fn = estimator_gen_fn
 
     def _num_workers(self):
         """Returns the number of workers to use for training."""
@@ -110,7 +111,7 @@ class DaskBackend(Backend):
                     break        
         return runnable_model
 
-    def train_for_one_epoch(self, models, store, feature_col, label_col, is_train=True):
+    def train_for_one_epoch(self, model_configs, store, feature_col, label_col, is_train=True):
         """
         Takes a set of Keras models and trains for one epoch. If is_train is False, validation is performed
          instead of training.
@@ -120,6 +121,9 @@ class DaskBackend(Backend):
         :param label_col: single list of label columns common for all models or a dictionary of label lists indexed by model id.
         :param is_train:
         """
+        print("Model config length: ",len(model_configs))
+        self.num_models = len(model_configs)
+        print(model_configs)
         self.initialize_data_loaders('','')
         self.model_checkpoint_paths = self.create_model_checkpoint_paths(self.num_models)
         
@@ -129,7 +133,7 @@ class DaskBackend(Backend):
                     m = self.get_runnable_model(self.model_checkpoint_paths, self.model_worker_run_dict, self.model_worker_stat_dict, w)
                     if (m != -1):
                         print('running model:' + self.model_checkpoint_paths[m] + ' on worker:' + str(w))
-                        future = self.client.submit(train_model, self.model_checkpoint_paths[m], self.data_mapping['data_w'+str(w)], workers=self.worker_id_ip_dict[w])
+                        future = self.client.submit(train_model, self.model_checkpoint_paths[m], self.estimator_gen_fn, model_configs[m], self.data_mapping['data_w'+str(w)], str(m), str(w), workers=self.worker_id_ip_dict[w])
                         self.model_worker_run_dict[m] = [w, future]
                         self.worker_model_run_dict[w] = [m, future]
                         print('model assigned:' + str(m) + ' on worker:' + str(w) + ' status:' + future.status)
