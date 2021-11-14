@@ -31,7 +31,7 @@ def train_model(model_checkpoint_file, estimator_gen_fn, model_config, log_files
     logs.append("Model name: " + str(model_name) +" Worker: " + str(worker) + " Config: " + str(model.optimizer.get_config()))
     if(os.path.isfile(model_checkpoint_file)):
         model.load_weights(model_checkpoint_file)
-    res = model.fit(numeric_features, target, epochs=1, batch_size=model_config["batch_size"])
+    res = model.fit(numeric_features, target, epochs=1)
     logs.append(str(res.history))
     model.save_weights(model_checkpoint_file)
     finish = time.time()
