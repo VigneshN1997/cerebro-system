@@ -185,7 +185,8 @@ class ModelSelection(object):
             'CEREBRO => Time: {}, Initializing Workers'.format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         # initialize backend and data loaders
         self.backend.initialize_workers()
-        print("Data workers initialized")
+        self.backend.init_log_files()
+        print("workers and log files initialized")
         
         if self.verbose >= 1: print(
             'CEREBRO => Time: {}, Preparing Data'.format(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))

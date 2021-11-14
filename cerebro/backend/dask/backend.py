@@ -33,22 +33,21 @@ class DaskBackend(Backend):
         :param verbose: Debug output verbosity (0-2). Defaults to 1.
     """
 
-    def __init__(self, num_workers=None, num_models=None, checkpoint_base_path=None, verbose=1, dask_cluster=None, estimator_gen_fn=None):
+    def __init__(self, dask_cluster=None, checkpoint_base_path=None, logs_path=None, verbose=1, estimator_gen_fn=None, num_workers=None, num_models=None):
         if(dask_cluster is not None):
             self.client = Client(dask_cluster)
         else:
             self.client = Client(n_workers=num_workers)
         print("Client dashboard: ",self.client.dashboard_link)
-        self.num_workers = num_workers
+        self.num_workers = len(self.client.scheduler_info()['workers'])
         self.num_models = num_models
         self.checkpoint_base_path = checkpoint_base_path
-    
+        self.logs_base_path = logs_path
         self.verbose = verbose
         if self.verbose >= 1:
                 print('CEREBRO-Dask => Time: {}, Running {} Workers'.format(datetime.datetime.now().strftime(
                     "%Y-%m-%d %H:%M:%S"), self.num_workers))
         self.workers_initialized = False
-        self.task_clients = None
         self.data_loaders_initialized = False
         self.worker_id_ip_dict = {}
         self.rand = np.random.RandomState(constants.RANDOM_SEED)
@@ -62,7 +61,6 @@ class DaskBackend(Backend):
     def initialize_workers(self):
         """Initialize workers (get worker IPs)"""
         all_worker_details = self.client.scheduler_info()['workers']
-#         print("helloo" + str(all_worker_details))
         for ip in all_worker_details:
             self.worker_id_ip_dict[all_worker_details[ip]['id']] = str(ip)
             
@@ -94,13 +92,24 @@ class DaskBackend(Backend):
         model_checkpoint_paths = []
         for i in range(n_models):
             model_path = checkpoint_base_path + 'model_' + str(i)
-            if os.path.exists(model_path) and os.path.isdir(model_path):
-                shutil.rmtree(model_path)
-            os.mkdir(model_path)
+            if not os.path.exists(model_path):
+                os.mkdir(model_path)
+            checkpoint_path = model_path + "/" + "cp.ckpt"
+            model_checkpoint_paths.append(checkpoint_path)
+        self.model_checkpoint_paths = model_checkpoint_paths
+    
+    def create_model_checkpoint_paths(self, n_models):
+        checkpoint_base_path = self.checkpoint_base_path
+        model_checkpoint_paths = []
+        for i in range(n_models):
+            model_path = checkpoint_base_path + 'model_' + str(i)
+            if not os.path.exists(model_path):
+                os.mkdir(model_path)
             checkpoint_path = model_path + "/" + "cp.ckpt"
             model_checkpoint_paths.append(checkpoint_path)
         return model_checkpoint_paths
-    
+
+
     # for a worker get a runnable model
     def get_runnable_model(self, models, model_worker_run_dict, model_worker_stat_dict, w):
         runnable_model = -1
@@ -110,6 +119,16 @@ class DaskBackend(Backend):
                     runnable_model = i
                     break        
         return runnable_model
+
+
+    def init_log_files(self):
+        self.log_file_paths = []
+        checkpoint_base_path = self.checkpoint_base_path
+        model_checkpoint_paths = []
+        for i in range(self.num_workers):
+            lp = self.logs_base_path + 'worker_' + str(i) + '.logs'
+            wp = self.logs_base_path + 'worker_times_' + str(i) + '.logs'
+            self.log_file_paths.append([lp, wp])
 
     def train_for_one_epoch(self, model_configs, store, feature_col, label_col, is_train=True):
         """
@@ -133,7 +152,7 @@ class DaskBackend(Backend):
                     m = self.get_runnable_model(self.model_checkpoint_paths, self.model_worker_run_dict, self.model_worker_stat_dict, w)
                     if (m != -1):
                         print('running model:' + self.model_checkpoint_paths[m] + ' on worker:' + str(w))
-                        future = self.client.submit(train_model, self.model_checkpoint_paths[m], self.estimator_gen_fn, model_configs[m], self.data_mapping['data_w'+str(w)], str(m), str(w), workers=self.worker_id_ip_dict[w])
+                        future = self.client.submit(train_model, self.model_checkpoint_paths[m], self.estimator_gen_fn, model_configs[m], self.log_file_paths[w], self.data_mapping['data_w'+str(w)], str(m), str(w), workers=self.worker_id_ip_dict[w])
                         self.model_worker_run_dict[m] = [w, future]
                         self.worker_model_run_dict[w] = [m, future]
                         print('model assigned:' + str(m) + ' on worker:' + str(w) + ' status:' + future.status)

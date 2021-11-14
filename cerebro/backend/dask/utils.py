@@ -14,10 +14,12 @@ import time
 #                 metrics=['accuracy'])
 #     return model
 
-def train_model(model_checkpoint_file, estimator_gen_fn, model_config, data_ddf, model_name, worker):
-    file_name = "worker_" + worker + "_logs.txt"
+def train_model(model_checkpoint_file, estimator_gen_fn, model_config, log_files, data_ddf, model_name, worker):
+    worker_log_file = log_files[0]
+    time_log_file = log_files[1]
     start = time.time()
-    print("calling train_model for model:" + str(model_checkpoint_file))
+    logs = []
+    logs.append("calling train_model for model:" + str(model_checkpoint_file))
     numeric_feature_names = list(data_ddf.columns)[:10]
     pd_df = data_ddf.compute()
     target = pd_df.pop(list(data_ddf.columns)[-1])
@@ -26,15 +28,21 @@ def train_model(model_checkpoint_file, estimator_gen_fn, model_config, data_ddf,
     tf.convert_to_tensor(numeric_features)
 #     model = get_basic_model(numeric_features)
     model = estimator_gen_fn(model_config)
-    print("Model name: ",model_name, " Worker: ", worker, " Config: ",str(model.optimizer.get_config()), " Batch size: ",model_config["batch_size"])
+    logs.append("Model name: " + str(model_name) +" Worker: " + str(worker) + " Config: " + str(model.optimizer.get_config()))
     if(os.path.isfile(model_checkpoint_file)):
         model.load_weights(model_checkpoint_file)
-    model.fit(numeric_features, target, epochs=1, batch_size=model_config["batch_size"])
+    res = model.fit(numeric_features, target, epochs=1, batch_size=model_config["batch_size"])
+    logs.append(str(res.history))
     model.save_weights(model_checkpoint_file)
     finish = time.time()
     log = [worker, model_name, start, finish]
     
-    with open(file_name, 'a') as f:
+    with open(time_log_file, 'a') as f:
         for param in log:
             f.write("%s, " % str(param))
         f.write("\n")
+
+    with open(worker_log_file, 'a') as f:
+        for l in logs:
+            f.write("%s, " % str(l))
+            f.write("\n")
