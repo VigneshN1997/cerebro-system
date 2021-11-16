@@ -94,7 +94,7 @@ class DaskBackend(Backend):
             model_path = checkpoint_base_path + 'model_' + str(i)
             if not os.path.exists(model_path):
                 os.mkdir(model_path)
-            checkpoint_path = model_path + "/" + "cp.ckpt"
+            checkpoint_path = model_path + "/" + "model.h5"
             model_checkpoint_paths.append(checkpoint_path)
         self.model_checkpoint_paths = model_checkpoint_paths
     
