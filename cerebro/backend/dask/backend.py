@@ -98,18 +98,6 @@ class DaskBackend(Backend):
             model_checkpoint_paths.append(checkpoint_path)
         self.model_checkpoint_paths = model_checkpoint_paths
     
-    def create_model_checkpoint_paths(self, n_models):
-        checkpoint_base_path = self.checkpoint_base_path
-        model_checkpoint_paths = []
-        for i in range(n_models):
-            model_path = checkpoint_base_path + 'model_' + str(i)
-            if not os.path.exists(model_path):
-                os.mkdir(model_path)
-            checkpoint_path = model_path + "/" + "cp.ckpt"
-            model_checkpoint_paths.append(checkpoint_path)
-        return model_checkpoint_paths
-
-
     # for a worker get a runnable model
     def get_runnable_model(self, models, model_worker_run_dict, model_worker_stat_dict, w):
         runnable_model = -1
@@ -144,7 +132,7 @@ class DaskBackend(Backend):
         self.num_models = len(model_configs)
         print(model_configs)
         self.initialize_data_loaders('','')
-        self.model_checkpoint_paths = self.create_model_checkpoint_paths(self.num_models)
+        # self.model_checkpoint_paths = self.create_model_checkpoint_paths(self.num_models)
         
         while(len(self.models_to_build) > 0):
             for w in range(self.num_workers):
