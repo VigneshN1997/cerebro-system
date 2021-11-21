@@ -47,3 +47,16 @@ def train_model(model_checkpoint_file, estimator_gen_fn, model_config, log_files
         for param in stats_log:
             f.write("%s, " % str(param))
         f.write("\n")
+
+def evaluate_model(model_cpkt_file, model_log_file, validation_data_ddf):
+        model = tf.keras.models.load_model(model_cpkt_file)
+        val_pd_df = validation_data_ddf.compute()
+        numeric_feature_names = list(val_pd_df.columns)[:784]
+        target = val_pd_df.pop(list(val_pd_df.columns)[-1])
+        numeric_features = val_pd_df[numeric_feature_names].astype(float)
+        results = model.evaluate(val_pd_df, target, batch_size=32)
+        with open(model_log_file, 'a') as f:
+            # f.write("writing in " + str(model_cpkt_file) + "\n")
+            for res in results:
+                f.write("%s, " % str(res))
+            f.write("\n")

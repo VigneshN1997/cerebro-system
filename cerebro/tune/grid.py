@@ -57,7 +57,9 @@ class GridSearch(ModelSelection):
         self._validate_search_space()
 
         self.estimator_param_maps = self._generate_all_param_maps()
+        self.backend.num_models = len(self.estimator_param_maps)
         self.backend.create_model_checkpoint_paths(len(self.estimator_param_maps))
+        self.backend.get_model_log_files()
         self.num_epochs = num_epochs
 
     def _validate_search_space(self):
@@ -227,6 +229,7 @@ def _fit_on_prepared_data(self, metadata):
         epoch_results = self.backend.train_for_one_epoch(self.estimator_param_maps, self.store, self.feature_cols,
                                                           self.label_cols)
 #         update_model_results(estimator_results, epoch_results)
+        self.backend.validate_models_one_epoch(self.estimator_param_maps)
 
 #         epoch_results = self.backend.train_for_one_epoch(estimators, self.store, self.feature_cols,
 #                                                          self.label_cols, is_train=False)

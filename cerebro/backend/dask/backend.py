@@ -16,7 +16,7 @@ import shutil
 
 from .. import constants
 from ..backend import Backend
-from .utils import train_model
+from .utils import train_model, evaluate_model
 
 class DaskBackend(Backend):
     """Dask backend implementing Cerebro model hopping
@@ -52,6 +52,7 @@ class DaskBackend(Backend):
         self.worker_id_ip_dict = {}
         self.rand = np.random.RandomState(constants.RANDOM_SEED)
         self.data_mapping = {}
+        self.val_data_fut = None
         self.estimator_gen_fn = estimator_gen_fn
 
     def _num_workers(self):
@@ -99,24 +100,43 @@ class DaskBackend(Backend):
         self.model_checkpoint_paths = model_checkpoint_paths
     
     # for a worker get a runnable model
-    def get_runnable_model(self, models, model_worker_run_dict, model_worker_stat_dict, w):
+    def get_runnable_model(self, models, model_worker_run_dict, model_worker_stat_dict, w, shuffled_model_list):
         runnable_model = -1
-        for i in range(len(models)):
-            if((not self.model_worker_stat_dict[w][i])):
-                if(self.model_worker_run_dict[i][1] is None):
-                    runnable_model = i
+        for m in shuffled_model_list:
+            if((not self.model_worker_stat_dict[w][m])):
+                if(self.model_worker_run_dict[m][1] is None):
+                    runnable_model = m
                     break        
         return runnable_model
 
 
     def init_log_files(self):
         self.log_file_paths = []
-        checkpoint_base_path = self.checkpoint_base_path
-        model_checkpoint_paths = []
         for i in range(self.num_workers):
             lp = self.logs_base_path + 'worker_' + str(i) + '.logs'
             wp = self.logs_base_path + 'worker_times_' + str(i) + '.logs'
             self.log_file_paths.append([lp, wp])
+
+    def get_model_log_files(self):
+        self.model_log_file_paths = []
+        for i in range(self.num_models):
+            mp = self.logs_base_path + 'model_logs_' + str(i) + '.logs'
+            self.model_log_file_paths.append(mp)
+
+    def validate_models_one_epoch(self, model_configs):
+        num_models_to_validate = len(model_configs)
+        futs = []
+        # self.get_model_log_files()
+        for i in range(self.num_models):
+            futs.append(self.client.submit(evaluate_model, self.model_checkpoint_paths[i], self.model_log_file_paths[i], self.val_data_fut))
+
+        ms = set([i for i in range(self.num_models)])
+        while(len(ms) > 0):
+            for i in range(self.num_models):
+                if(i in ms and futs[i].status != 'pending'):
+                    ms.remove(i)
+                    
+
 
     def train_for_one_epoch(self, model_configs, store, feature_col, label_col, is_train=True):
         """
@@ -128,16 +148,21 @@ class DaskBackend(Backend):
         :param label_col: single list of label columns common for all models or a dictionary of label lists indexed by model id.
         :param is_train:
         """
+        # TODO: shuffle a list of models and pass to get runnable model (Done) => test it
+
         print("Model config length: ",len(model_configs))
         self.num_models = len(model_configs)
         print(model_configs)
+        model_lis = [i for i in range(self.num_models)]
+        random.shuffle(model_lis)
+
         self.initialize_data_loaders('','')
         # self.model_checkpoint_paths = self.create_model_checkpoint_paths(self.num_models)
         
         while(len(self.models_to_build) > 0):
             for w in range(self.num_workers):
                 if(self.worker_model_run_dict[w][1] == None):
-                    m = self.get_runnable_model(self.model_checkpoint_paths, self.model_worker_run_dict, self.model_worker_stat_dict, w)
+                    m = self.get_runnable_model(self.model_checkpoint_paths, self.model_worker_run_dict, self.model_worker_stat_dict, w, model_lis)
                     if (m != -1):
                         print('running model:' + self.model_checkpoint_paths[m] + ' on worker:' + str(w))
                         future = self.client.submit(train_model, self.model_checkpoint_paths[m], self.estimator_gen_fn, model_configs[m], self.log_file_paths[w], self.data_mapping['data_w'+str(w)], str(m), str(w), workers=self.worker_id_ip_dict[w])
@@ -187,6 +212,7 @@ class DaskBackend(Backend):
         part_fracs = [1/self._num_workers() for i in range(self._num_workers())]
         partitioned_dfs = dataset.random_split(part_fracs, random_state=0)
         self.send_data(partitioned_dfs)
+        self.val_data_fut = self.client.scatter(validation, broadcast=True)
         self.features = list(dataset.columns)[:-1]
         self.target = list(dataset.columns)[-1]
         return {}, {}, {}, {}
