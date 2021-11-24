@@ -225,7 +225,7 @@ def _fit_on_prepared_data(self, metadata):
 
     # Trains the models up to the number of epochs specified. For each iteration also performs validation
     for epoch in range(self.num_epochs):
-        print("I ran")
+        # print("I ran")
         epoch_results = self.backend.train_for_one_epoch(self.estimator_param_maps, self.store, self.feature_cols,
                                                           self.label_cols)
 #         update_model_results(estimator_results, epoch_results)

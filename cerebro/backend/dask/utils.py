@@ -1,42 +1,40 @@
 import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import models, layers
+ 
+from petastorm import make_batch_reader
+from petastorm.tf_utils import make_petastorm_dataset
+
 import os
 import time
 
-# def get_basic_model(numeric_features):
-#     print("calling get basic model")
-#     model = tf.keras.Sequential([
-#     tf.keras.layers.Dense(10, input_dim=10, activation='relu'),
-#     tf.keras.layers.Dense(10, activation='relu'),
-#     tf.keras.layers.Dense(1, activation='sigmoid')
-# ])
-#     model.compile(optimizer='adam',
-#                 loss=tf.keras.losses.BinaryCrossentropy(from_logits=True),
-#                 metrics=['accuracy'])
-#     return model
+def get_data_reader(train_file_path):
+    petastorm_dataset_url = "file://" + train_file_path
+    reader = make_batch_reader(petastorm_dataset_url)
 
-def train_model(model_checkpoint_file, estimator_gen_fn, model_config, log_files, data_ddf, model_name, worker):
+def train_model(model_checkpoint_file, train_file_path, estimator_gen_fn, model_config, log_files, model_name, worker):
     worker_log_file = log_files[0]
     time_log_file = log_files[1]
     start = time.time()
     logs = []
-    # logs.append("calling train_model for model:" + str(model_checkpoint_file))
-    numeric_feature_names = list(data_ddf.columns)[:784]
-    pd_df = data_ddf.compute()
-    target = pd_df.pop(list(data_ddf.columns)[-1])
-    
-    numeric_features = pd_df[numeric_feature_names].astype(float)
-    tf.convert_to_tensor(numeric_features)
-#     model = get_basic_model(numeric_features)
     model = estimator_gen_fn(model_config)
     # logs.append("Model name: " + str(model_name) +" Worker: " + str(worker) + " Config: " + str(model.optimizer.get_config()))
     if(os.path.isfile(model_checkpoint_file)):
         model = tf.keras.models.load_model(model_checkpoint_file)
-    res = model.fit(numeric_features, target, epochs=1)
+
+    petastorm_dataset_url = "file://" + train_file_path
+    res = None
+    with make_batch_reader(petastorm_dataset_url, num_epochs=1) as reader:
+      dataset = make_petastorm_dataset(reader)
+      res = model.fit(dataset, steps_per_epoch=10, epochs=1, verbose=1, batch_size=model_config["batch_size"])
+      model.save(model_checkpoint_file)
+
+    # res = model.fit(dataset, epochs=1)
     # logs.append(str(res.history))
-    model.save(model_checkpoint_file)
+    
     finish = time.time()
     log = [worker, model_name, start, finish]
-    stats_log = [worker, model_name, res.history["loss"][0], res.history["sparse_categorical_accuracy"][0]]
+    stats_log = [worker, model_name, str(res.history)]
 
     with open(time_log_file, 'a') as f:
         for param in log:
@@ -48,15 +46,16 @@ def train_model(model_checkpoint_file, estimator_gen_fn, model_config, log_files
             f.write("%s, " % str(param))
         f.write("\n")
 
-def evaluate_model(model_cpkt_file, model_log_file, validation_data_ddf):
-        model = tf.keras.models.load_model(model_cpkt_file)
-        val_pd_df = validation_data_ddf.compute()
-        numeric_feature_names = list(val_pd_df.columns)[:784]
-        target = val_pd_df.pop(list(val_pd_df.columns)[-1])
-        numeric_features = val_pd_df[numeric_feature_names].astype(float)
+def evaluate_model(model_cpkt_file, model_log_file, validation_data_path):
+    model = tf.keras.models.load_model(model_cpkt_file)
+    petastorm_dataset_url = "file://" + validation_data_path
+    res = None
+    with make_batch_reader(petastorm_dataset_url) as reader:
+        dataset = make_petastorm_dataset(reader)
         results = model.evaluate(val_pd_df, target, batch_size=32)
         with open(model_log_file, 'a') as f:
             # f.write("writing in " + str(model_cpkt_file) + "\n")
             for res in results:
                 f.write("%s, " % str(res))
             f.write("\n")
+        

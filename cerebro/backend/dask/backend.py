@@ -33,8 +33,10 @@ class DaskBackend(Backend):
         :param verbose: Debug output verbosity (0-2). Defaults to 1.
     """
 
-    def __init__(self, dask_cluster=None, checkpoint_base_path=None, logs_path=None, verbose=1, estimator_gen_fn=None, num_workers=None, num_models=None):
-        if(dask_cluster is not None):
+    def __init__(self, scheduler_address=None, dask_cluster=None, checkpoint_base_path=None, logs_path=None, verbose=1, estimator_gen_fn=None, num_workers=None, num_models=None):
+        if(scheduler_address is not None):
+            self.client = Client(scheduler_address)
+        elif(dask_cluster is not None):
             self.client = Client(dask_cluster)
         else:
             self.client = Client(n_workers=num_workers)
@@ -52,8 +54,10 @@ class DaskBackend(Backend):
         self.worker_id_ip_dict = {}
         self.rand = np.random.RandomState(constants.RANDOM_SEED)
         self.data_mapping = {}
-        self.val_data_fut = None
+        # self.val_data_fut = None
         self.estimator_gen_fn = estimator_gen_fn
+
+
 
     def _num_workers(self):
         """Returns the number of workers to use for training."""
@@ -62,8 +66,10 @@ class DaskBackend(Backend):
     def initialize_workers(self):
         """Initialize workers (get worker IPs)"""
         all_worker_details = self.client.scheduler_info()['workers']
+        i = 0
         for ip in all_worker_details:
-            self.worker_id_ip_dict[all_worker_details[ip]['id']] = str(ip)
+            self.worker_id_ip_dict[i] = str(ip)
+            i += 1
             
         self.workers_initialized = True
 
@@ -128,12 +134,14 @@ class DaskBackend(Backend):
         futs = []
         # self.get_model_log_files()
         for i in range(self.num_models):
-            futs.append(self.client.submit(evaluate_model, self.model_checkpoint_paths[i], self.model_log_file_paths[i], self.val_data_fut))
+            print("sending model for evaluation:" + str(i))
+            futs.append(self.client.submit(evaluate_model, self.model_checkpoint_paths[i], self.model_log_file_paths[i], self.base_val_path))
 
         ms = set([i for i in range(self.num_models)])
         while(len(ms) > 0):
             for i in range(self.num_models):
                 if(i in ms and futs[i].status != 'pending'):
+                    print(" model for evaluation done:" + str(i))
                     ms.remove(i)
                     
 
@@ -165,7 +173,9 @@ class DaskBackend(Backend):
                     m = self.get_runnable_model(self.model_checkpoint_paths, self.model_worker_run_dict, self.model_worker_stat_dict, w, model_lis)
                     if (m != -1):
                         print('running model:' + self.model_checkpoint_paths[m] + ' on worker:' + str(w))
-                        future = self.client.submit(train_model, self.model_checkpoint_paths[m], self.estimator_gen_fn, model_configs[m], self.log_file_paths[w], self.data_mapping['data_w'+str(w)], str(m), str(w), workers=self.worker_id_ip_dict[w])
+                        if(not os.path.isfile(self.model_checkpoint_paths[m])):
+                            print("training the model file for first time:" + self.model_checkpoint_paths[m])
+                        future = self.client.submit(train_model, self.model_checkpoint_paths[m], self.train_data_paths[w],self.estimator_gen_fn, model_configs[m], self.log_file_paths[w], str(m), str(w), workers=self.worker_id_ip_dict[w])
                         self.model_worker_run_dict[m] = [w, future]
                         self.worker_model_run_dict[w] = [m, future]
                         print('model assigned:' + str(m) + ' on worker:' + str(w) + ' status:' + future.status)
@@ -209,12 +219,17 @@ class DaskBackend(Backend):
         :param compress_sparse:
         :param verbose:
         """
-        part_fracs = [1/self._num_workers() for i in range(self._num_workers())]
-        partitioned_dfs = dataset.random_split(part_fracs, random_state=0)
-        self.send_data(partitioned_dfs)
-        self.val_data_fut = self.client.scatter(validation, broadcast=True)
-        self.features = list(dataset.columns)[:-1]
-        self.target = list(dataset.columns)[-1]
+        # part_fracs = [1/self._num_workers() for i in range(self._num_workers())]
+        # partitioned_dfs = dataset.random_split(part_fracs, random_state=0)
+        # self.send_data(partitioned_dfs)
+        # self.val_data_fut = self.client.scatter(validation, broadcast=True)
+        # self.features = list(dataset.columns)[:-1]
+        # self.target = list(dataset.columns)[-1]
+        self.base_train_path = dataset
+        self.base_val_path = validation
+        self.train_data_paths = []
+        for i in range(self.num_workers):
+            self.train_data_paths.append(self.base_train_path + 'train_' + str(i) + '.parquet')
         return {}, {}, {}, {}
 
     def get_metadata_from_parquet(self, store, label_columns=['label'], feature_columns=['features']):
