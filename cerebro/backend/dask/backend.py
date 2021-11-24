@@ -54,8 +54,10 @@ class DaskBackend(Backend):
         self.worker_id_ip_dict = {}
         self.rand = np.random.RandomState(constants.RANDOM_SEED)
         self.data_mapping = {}
-        # self.val_data_fut = None
+        self.val_data_fut = None
         self.estimator_gen_fn = estimator_gen_fn
+        self.train_data_paths = []
+        self.valid_data_paths = []
 
 
 
@@ -123,26 +125,65 @@ class DaskBackend(Backend):
             wp = self.logs_base_path + 'worker_times_' + str(i) + '.logs'
             self.log_file_paths.append([lp, wp])
 
-    def get_model_log_files(self):
-        self.model_log_file_paths = []
-        for i in range(self.num_models):
-            mp = self.logs_base_path + 'model_logs_' + str(i) + '.logs'
-            self.model_log_file_paths.append(mp)
+    def get_model_log_file(self):
+        self.model_log_file_path = self.logs_base_path + 'model_val.logs'
+
+        # for i in range(self.num_models):
+        #     mp = self.logs_base_path + 'model_logs_' + str(i) + '.logs'
+        #     self.model_log_file_paths.append(mp)
 
     def validate_models_one_epoch(self, model_configs):
         num_models_to_validate = len(model_configs)
-        futs = []
-        # self.get_model_log_files()
-        for i in range(self.num_models):
-            print("sending model for evaluation:" + str(i))
-            futs.append(self.client.submit(evaluate_model, self.model_checkpoint_paths[i], self.model_log_file_paths[i], self.base_val_path))
 
-        ms = set([i for i in range(self.num_models)])
-        while(len(ms) > 0):
-            for i in range(self.num_models):
-                if(i in ms and futs[i].status != 'pending'):
-                    print(" model for evaluation done:" + str(i))
-                    ms.remove(i)
+        # print(model_configs)
+        model_lis = [i for i in range(self.num_models)]
+        # random.shuffle(model_lis)
+
+        self.initialize_data_loaders('','')
+        # self.model_checkpoint_paths = self.create_model_checkpoint_paths(self.num_models)
+        model_worker_val_stats = [[[] for i in range(self.num_models)] for j in range(self.num_workers)]
+        combined_model_stats = [[0.0,0.0] for i in range(self.num_models)]
+        while(len(self.models_to_build) > 0):
+            for w in range(self.num_workers):
+                if(self.worker_model_run_dict[w][1] == None):
+                    m = self.get_runnable_model(self.model_checkpoint_paths, self.model_worker_run_dict, self.model_worker_stat_dict, w, model_lis)
+                    if (m != -1):
+                        print('evaluating model:' + self.model_checkpoint_paths[m] + ' on worker:' + str(w))
+                        future = self.client.submit(evaluate_model, self.model_checkpoint_paths[m], self.valid_data_paths[w], workers=self.worker_id_ip_dict[w])
+                        self.model_worker_run_dict[m] = [w, future]
+                        self.worker_model_run_dict[w] = [m, future]
+                        print('model assigned:' + str(m) + ' on worker:' + str(w) + ' status:' + future.status)
+                else:
+                    m = self.worker_model_run_dict[w][0]
+                    fut = self.worker_model_run_dict[w][1]
+                    if(fut.status == 'finished'):
+                        print('evaluated model:' + str(m) + ' on worker:' + str(w))
+                        self.model_worker_stat_dict[w][m] = True
+                        model_worker_val_stats[m][w] = fut.result()
+                        print('m: ' + str(m) + ' w:' + str(w) + 'stats:'+ str(model_worker_val_stats[m][w]))
+                        print('m done:' + str(m) + ' val:' + str(self.model_checkpoint_paths[m]))
+                        self.worker_model_run_dict[w] = [None, None]
+                        self.model_worker_run_dict[m] = [None, None]
+                        model_done = True
+                        for i in range(self.num_workers):
+                            if(not self.model_worker_stat_dict[i][m]):
+                                model_done = False
+                                break
+                        if(model_done):
+                            self.models_to_build.remove(m)
+
+        for m in range(self.num_models):
+            for w in range(self.num_workers):
+                combined_model_stats[m][0] += model_worker_val_stats[m][w][0]
+                combined_model_stats[m][1] += (model_worker_val_stats[m][w][1] * self.val_data_len_fracs[w])
+        with open(self.model_log_file_path, 'a') as f:
+            for i in range(len(combined_model_stats)):
+                f.write("%s, " % str(i))
+                f.write("%s, " % str(combined_model_stats[i][0]))
+                f.write("%s" % str(combined_model_stats[i][1]))
+                f.write("\n")
+        print('Implemented eval_for_one_epoch')
+        return []
                     
 
 
@@ -227,9 +268,22 @@ class DaskBackend(Backend):
         # self.target = list(dataset.columns)[-1]
         self.base_train_path = dataset
         self.base_val_path = validation
-        self.train_data_paths = []
         for i in range(self.num_workers):
             self.train_data_paths.append(self.base_train_path + 'train_' + str(i) + '.parquet')
+        for i in range(self.num_workers):
+            self.valid_data_paths.append(self.base_val_path + 'valid_' + str(i) + '.parquet')
+        self.val_data_lens = []
+        self.total_sz_val_data = 0
+        for val_data in self.valid_data_paths:
+            df = dd.read_parquet(val_data)
+            labels = df["labels"].compute()
+            num_pts = len(labels)
+            self.val_data_lens.append(num_pts)
+            self.total_sz_val_data += num_pts
+        print("total sz val data:" + str(self.total_sz_val_data))
+        print("diff lens val data:" + str(self.val_data_lens))
+        self.val_data_len_fracs = [float(l)/float(self.total_sz_val_data) for l in self.val_data_lens]
+        print("diff len frac val data:" + str(self.val_data_len_fracs))
         return {}, {}, {}, {}
 
     def get_metadata_from_parquet(self, store, label_columns=['label'], feature_columns=['features']):

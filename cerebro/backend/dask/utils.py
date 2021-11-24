@@ -4,6 +4,7 @@ from tensorflow.keras import models, layers
  
 from petastorm import make_batch_reader
 from petastorm.tf_utils import make_petastorm_dataset
+import dask.dataframe as dd
 
 import os
 import time
@@ -46,16 +47,13 @@ def train_model(model_checkpoint_file, train_file_path, estimator_gen_fn, model_
             f.write("%s, " % str(param))
         f.write("\n")
 
-def evaluate_model(model_cpkt_file, model_log_file, validation_data_path):
+def evaluate_model(model_cpkt_file, validation_data_path):
     model = tf.keras.models.load_model(model_cpkt_file)
     petastorm_dataset_url = "file://" + validation_data_path
-    res = None
+    
     with make_batch_reader(petastorm_dataset_url) as reader:
         dataset = make_petastorm_dataset(reader)
-        results = model.evaluate(val_pd_df, target, batch_size=32)
-        with open(model_log_file, 'a') as f:
-            # f.write("writing in " + str(model_cpkt_file) + "\n")
-            for res in results:
-                f.write("%s, " % str(res))
-            f.write("\n")
+        results = model.evaluate(dataset)
         
+    return results
+    

@@ -59,7 +59,7 @@ class GridSearch(ModelSelection):
         self.estimator_param_maps = self._generate_all_param_maps()
         self.backend.num_models = len(self.estimator_param_maps)
         self.backend.create_model_checkpoint_paths(len(self.estimator_param_maps))
-        self.backend.get_model_log_files()
+        self.backend.get_model_log_file()
         self.num_epochs = num_epochs
 
     def _validate_search_space(self):
