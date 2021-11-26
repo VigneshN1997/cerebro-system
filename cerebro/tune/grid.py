@@ -229,7 +229,7 @@ def _fit_on_prepared_data(self, metadata):
         epoch_results = self.backend.train_for_one_epoch(self.estimator_param_maps, self.store, self.feature_cols,
                                                           self.label_cols)
 #         update_model_results(estimator_results, epoch_results)
-        self.backend.validate_models_one_epoch(self.estimator_param_maps)
+        # self.backend.validate_models_one_epoch(self.estimator_param_maps)
 
 #         epoch_results = self.backend.train_for_one_epoch(estimators, self.store, self.feature_cols,
 #                                                          self.label_cols, is_train=False)
