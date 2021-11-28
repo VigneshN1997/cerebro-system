@@ -21,6 +21,7 @@ import numpy as np
 import logging
 import traceback
 from ..commons.constants import *
+import time
 
 from .base import ModelSelection, is_larger_better, ModelSelectionResult, _HP, _HPChoice, update_model_results
 from ..db.dao import Model, Metric, ParamVal, ParamDef, Experiment
@@ -226,10 +227,17 @@ def _fit_on_prepared_data(self, metadata):
     # Trains the models up to the number of epochs specified. For each iteration also performs validation
     for epoch in range(self.num_epochs):
         # print("I ran")
+        start = time.time()
         epoch_results = self.backend.train_for_one_epoch(self.estimator_param_maps, self.store, self.feature_cols,
                                                           self.label_cols)
 #         update_model_results(estimator_results, epoch_results)
-        # self.backend.validate_models_one_epoch(self.estimator_param_maps)
+        self.backend.validate_models_one_epoch(self.estimator_param_maps)
+        finish = time.time()
+        log = [epoch, start, finish]
+        with open(self.backend.epoch_times_path, 'a') as f:
+        for param in log:
+            f.write("%s, " % str(param))
+        f.write("\n")
 
 #         epoch_results = self.backend.train_for_one_epoch(estimators, self.store, self.feature_cols,
 #                                                          self.label_cols, is_train=False)
