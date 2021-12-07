@@ -21,28 +21,27 @@ from .utils import train_model, evaluate_model
 class DaskBackend(Backend):
     """Dask backend implementing Cerebro model hopping
 
-        :param spark_context: Spark context
-        :param num_workers: Number of Cerebro workers.
-        :param start_timeout: Timeout for Spark tasks to spawn, register and start running the code, in seconds.
-                   If it is not set as well, defaults to 600 seconds.
-        :param disk_cache_size_gb: Size of the disk data cache in GBs (default 10GB).
-        :param data_readers_pool_type: Data readers pool type ('process' or 'thread') (default 'thread')
-        :param num_data_readers: Number of data readers (default 10)
-        :param nics: List of NIC names, will only use these for communications. If None is specified, use any
-            available networking interfaces (default None)
-        :param verbose: Debug output verbosity (0-2). Defaults to 1.
+        :param scheduler_address: if terminal is used to initialize scheduler and dask workers, need to give scheduler IP
+        :param dask_cluster: if python API is used to initialize SSH cluster (https://docs.dask.org/en/stable/how-to/deploy-dask/ssh.html)
+        :param checkpoint_base_path: path where model checkpoints will be stored 
+        :param logs_path: path where logs will be stored
+        :param estimator_gen_fn: model building function
+        :param num_workers: for single node execution, can provide number of workers as input
     """
-
-    def __init__(self, scheduler_address=None, dask_cluster=None, checkpoint_base_path=None, logs_path=None, verbose=1, estimator_gen_fn=None, num_workers=None, num_models=None):
+    def __init__(self, scheduler_address=None, dask_cluster=None, checkpoint_base_path=None, logs_path=None, verbose=1, estimator_gen_fn=None, num_workers=None):
+        # initialize dask client
         if(scheduler_address is not None):
             self.client = Client(scheduler_address)
         elif(dask_cluster is not None):
             self.client = Client(dask_cluster)
         else:
             self.client = Client(n_workers=num_workers)
+        # get the dask dashboard link
         print("Client dashboard: ",self.client.dashboard_link)
+        # get the number of workers
         self.num_workers = len(self.client.scheduler_info()['workers'])
-        self.num_models = num_models
+
+        # set the models and log paths
         self.checkpoint_base_path = checkpoint_base_path
         self.logs_base_path = logs_path
         self.verbose = verbose
@@ -51,15 +50,17 @@ class DaskBackend(Backend):
                     "%Y-%m-%d %H:%M:%S"), self.num_workers))
         self.workers_initialized = False
         self.data_loaders_initialized = False
+        # clear the worker id, worker ip dictionary
         self.worker_id_ip_dict = {}
+
         self.rand = np.random.RandomState(constants.RANDOM_SEED)
+        
+        # used when data has to be scattered
         self.data_mapping = {}
         self.val_data_fut = None
         self.estimator_gen_fn = estimator_gen_fn
         self.train_data_paths = []
         self.valid_data_paths = []
-
-
 
     def _num_workers(self):
         """Returns the number of workers to use for training."""
@@ -70,16 +71,19 @@ class DaskBackend(Backend):
         all_worker_details = self.client.scheduler_info()['workers']
         i = 0
         for ip in all_worker_details:
+            # set the mapping between worker ID and worker IP
             self.worker_id_ip_dict[i] = str(ip)
             i += 1
             
         self.workers_initialized = True
 
     def initialize_data_loaders(self, store, schema_fields):
-        """Initialize data loaders"""
+        """Initialize data loaders: in dask context, this function is used to initializing the data structures for the random scheduler"""
         
         if self.workers_initialized:
+            # if a model m has been trained on worker w
             self.model_worker_stat_dict = [[False for i in range(self.num_models)] for j in range(self.num_workers)]
+            # list of models to build
             self.models_to_build = set()
             for i in range(self.num_models):
                 self.models_to_build.add(i)
@@ -87,19 +91,21 @@ class DaskBackend(Backend):
             self.model_worker_run_dict = {}
             self.worker_model_run_dict = {}
 
-            for i in range(self.num_models): # mapping from model number to worker number and its future
+            for i in range(self.num_models): # mapping from model number to worker number and its training process future object
                 self.model_worker_run_dict[i] = [None, None]
 
-            for i in range(self.num_workers):# mapping from worker number to model number and its future
+            for i in range(self.num_workers):# mapping from worker number to model number and its training process future object
                 self.worker_model_run_dict[i] = [None, None]
     
             self.data_loaders_initialized = True
-            print('Workers are initialized')
+            # print('Workers are initialized')
 
     def create_model_checkpoint_paths(self, n_models):
+        """Initialize model checkpoint file paths"""
         checkpoint_base_path = self.checkpoint_base_path
         model_checkpoint_paths = []
-        for i in range(n_models):
+        # for all the model configs (will use the config map)
+        for i in range(n_models): 
             model_path = checkpoint_base_path + 'model_' + str(i)
             if not os.path.exists(model_path):
                 os.mkdir(model_path)
@@ -107,8 +113,16 @@ class DaskBackend(Backend):
             model_checkpoint_paths.append(checkpoint_path)
         self.model_checkpoint_paths = model_checkpoint_paths
     
-    # for a worker get a runnable model
+
     def get_runnable_model(self, models, model_worker_run_dict, model_worker_stat_dict, w, shuffled_model_list):
+        """
+            for a worker get a runnable model (idle model)
+            :param model_worker_run_dict: mapping from model number to worker number and its training process future object (to check if there is some model that is free)
+            :param model_worker_stat_dict: if a model m has been trained on worker w
+            :param w: idle worker
+            :param shuffled_model_list: randomly shuffled list of models
+
+        """
         runnable_model = -1
         for m in shuffled_model_list:
             if((not self.model_worker_stat_dict[w][m])):
@@ -119,6 +133,9 @@ class DaskBackend(Backend):
 
 
     def init_log_files(self):
+        """
+            initialize the log file paths for logging model execution times on workers, sub epoch losses, accuracies
+        """
         self.log_file_paths = []
         for i in range(self.num_workers):
             lp = self.logs_base_path + 'worker_' + str(i) + '.logs'
@@ -126,128 +143,115 @@ class DaskBackend(Backend):
             self.log_file_paths.append([lp, wp])
 
     def get_model_log_file(self):
-        self.model_log_file_path = self.logs_base_path + 'model_val.logs'
+        """
+            initialize the model log file paths for logging model validation losses and accuracies
+        """
+        self.model_log_file_paths = []
         self.epoch_times_path = self.logs_base_path + 'epoch_times.logs'
-        # for i in range(self.num_models):
-        #     mp = self.logs_base_path + 'model_logs_' + str(i) + '.logs'
-        #     self.model_log_file_paths.append(mp)
+        for i in range(self.num_models):
+            mp = self.logs_base_path + 'model_logs_' + str(i) + '.logs'
+            self.model_log_file_paths.append(mp)
 
     def validate_models_one_epoch(self, model_configs):
+        """
+            model validation performed using task parallelism
+            :param model_configs: model configs to find out number of models
+        """
         num_models_to_validate = len(model_configs)
 
-        # print(model_configs)
         model_lis = [i for i in range(self.num_models)]
-        # random.shuffle(model_lis)
 
         self.initialize_data_loaders('','')
-        # self.model_checkpoint_paths = self.create_model_checkpoint_paths(self.num_models)
-        # model_worker_val_stats = [[[] for i in range(self.num_models)] for j in range(self.num_workers)]
-        # combined_model_stats = [[0.0,0.0] for i in range(self.num_models)]
         validate_models = [False for i in range(self.num_models)]
-        while(len(self.models_to_build) > 0):
-            for w in range(self.num_workers):
+        while(len(self.models_to_build) > 0): # models to validate**
+            for w in range(self.num_workers): # iterate over all workers to find an idle worker
                 if(self.worker_model_run_dict[w][1] == None):
                     m = -1
-                    for i in range(self.num_models):
+                    for i in range(self.num_models): # iterate over all models to find an idle model (not yet validated nor alloted to a worker)
                         if(validate_models[i] == False and self.model_worker_run_dict[i][1] == None):
                             m = i
                             break
                     if (m != -1):
-                        print('evaluating model:' + self.model_checkpoint_paths[m] + ' on worker:' + str(w))
-                        future = self.client.submit(evaluate_model, self.model_checkpoint_paths[m], self.valid_data_paths, self.model_log_file_path, workers=self.worker_id_ip_dict[w])
+                        # print('evaluating model:' + self.model_checkpoint_paths[m] + ' on worker:' + str(w))
+                        future = self.client.submit(evaluate_model, self.model_checkpoint_paths[m], self.valid_data_paths, self.model_log_file_paths[m], workers=self.worker_id_ip_dict[w])
                         self.model_worker_run_dict[m] = [w, future]
                         self.worker_model_run_dict[w] = [m, future]
-                        print('model assigned:' + str(m) + ' on worker:' + str(w) + ' status:' + future.status)
-                else:
+                        # print('model assigned:' + str(m) + ' on worker:' + str(w) + ' status:' + future.status)
+                else: # if a worker is not idle, check its model status
                     m = self.worker_model_run_dict[w][0]
                     fut = self.worker_model_run_dict[w][1]
                     if(fut.status == 'finished'):
-                        print('evaluated model:' + str(m) + ' on worker:' + str(w))
+                        # print('evaluated model:' + str(m) + ' on worker:' + str(w))
                         validate_models[m] = True
                         self.worker_model_run_dict[w] = [None, None]
                         self.model_worker_run_dict[m] = [None, None]
                         eval_done = True
-                        for i in range(self.num_models):
+                        self.models_to_build.remove(m)
+                        for i in range(self.num_models): # check if all models are validated
                             if(not validate_models[i]):
                                 eval_done = False
                                 break
                         if(eval_done):
-                            self.models_to_build.remove(m)
-
-        # for m in range(self.num_models):
-        #     for w in range(self.num_workers):
-        #         combined_model_stats[m][0] += model_worker_val_stats[m][w][0]
-        #         combined_model_stats[m][1] += (model_worker_val_stats[m][w][1] * self.val_data_len_fracs[w])
-        # with open(self.model_log_file_path, 'a') as f:
-        #     for i in range(len(combined_model_stats)):
-        #         f.write("%s, " % str(i))
-        #         f.write("%s, " % str(combined_model_stats[i][0]))
-        #         f.write("%s" % str(combined_model_stats[i][1]))
-        #         f.write("\n")
-        print('Implemented eval_for_one_epoch')
+                            break
         return []
                     
 
 
     def train_for_one_epoch(self, model_configs, store, feature_col, label_col, is_train=True):
         """
-        Takes a set of Keras models and trains for one epoch. If is_train is False, validation is performed
+        Takes a set of Keras model configs and trains for one epoch using Model Hopping Parallelism
          instead of training.
-        :param models:
-        :param store: single store object common for all models or a dictionary of store objects indexed by model id.
-        :param feature_col: single list of feature columns common for all models or a dictionary of feature lists indexed by model id.
-        :param label_col: single list of label columns common for all models or a dictionary of label lists indexed by model id.
+        :param models: model_configs to train on
         :param is_train:
         """
-        # TODO: shuffle a list of models and pass to get runnable model (Done) => test it
 
         print("Model config length: ",len(model_configs))
         self.num_models = len(model_configs)
-        print(model_configs)
+        # print(model_configs)
         model_lis = [i for i in range(self.num_models)]
-        random.shuffle(model_lis)
+        random.shuffle(model_lis) # randomly shuffle the list of models
 
         self.initialize_data_loaders('','')
         # self.model_checkpoint_paths = self.create_model_checkpoint_paths(self.num_models)
         
-        while(len(self.models_to_build) > 0):
+        while(len(self.models_to_build) > 0): # loop until all models are built once on all workers
             for w in range(self.num_workers):
                 if(self.worker_model_run_dict[w][1] == None):
                     m = self.get_runnable_model(self.model_checkpoint_paths, self.model_worker_run_dict, self.model_worker_stat_dict, w, model_lis)
                     if (m != -1):
-                        print('running model:' + self.model_checkpoint_paths[m] + ' on worker:' + str(w))
+                        # print('running model:' + self.model_checkpoint_paths[m] + ' on worker:' + str(w))
                         if(not os.path.isfile(self.model_checkpoint_paths[m])):
                             print("training the model file for first time:" + self.model_checkpoint_paths[m])
+                        # model sub epoch training submitted to a worker
                         future = self.client.submit(train_model, self.model_checkpoint_paths[m], self.train_data_paths[w],self.estimator_gen_fn, model_configs[m], self.log_file_paths[w], str(m), str(w), workers=self.worker_id_ip_dict[w])
                         self.model_worker_run_dict[m] = [w, future]
                         self.worker_model_run_dict[w] = [m, future]
-                        print('model assigned:' + str(m) + ' on worker:' + str(w) + ' status:' + future.status)
-                else:
+                        # print('model assigned:' + str(m) + ' on worker:' + str(w) + ' status:' + future.status)
+                else: # check status of model training
                     m = self.worker_model_run_dict[w][0]
                     fut = self.worker_model_run_dict[w][1]
                     if(fut.status == 'finished'):
-                        print('done model:' + str(m) + ' on worker:' + str(w))
+                        # print('done model:' + str(m) + ' on worker:' + str(w))
                         self.model_worker_stat_dict[w][m] = True
-                        print('m:' + str(m) + ' val:' + str(self.model_checkpoint_paths[m]))
+                        # print('m:' + str(m) + ' val:' + str(self.model_checkpoint_paths[m]))
                         self.worker_model_run_dict[w] = [None, None]
                         self.model_worker_run_dict[m] = [None, None]
-                        model_done = True
+                        model_done = True # check if a model is trained on all workers
                         for i in range(self.num_workers):
                             if(not self.model_worker_stat_dict[i][m]):
                                 model_done = False
                                 break
                         if(model_done):
                             self.models_to_build.remove(m)        
-        print('Implemented train_for_one_epoch')
+        # print('Implemented train_for_one_epoch')
         return []
 
     def teardown_workers(self):
         """Teardown workers"""
-#         self.client.shutdown()
-        print('Yet to implement teardown_workers')
+        self.client.shutdown()
 
     def send_data(self, partitioned_dfs):
-        print(self.worker_id_ip_dict)
+        # print(self.worker_id_ip_dict)
         for d in range(self.num_workers):
         #    print("D: ",d," N_workers: ",self.num_workers," Partition: ",partitioned_dfs[d]," IP Dict: ",self.worker_id_ip_dict[d]) 
             self.data_mapping["data_w{0}".format(d)] = self.client.scatter(partitioned_dfs[d], workers=self.worker_id_ip_dict[d])
@@ -257,42 +261,71 @@ class DaskBackend(Backend):
         """
         Prepare data by writing out into persistent storage
         :param store:
-        :param dataset:
-        :param validation:
+        :param dataset: path to prepared parquet training dataset 
+        :param validation: path to prepared parquet validation dataset
         :param compress_sparse:
         :param verbose:
         """
-        # part_fracs = [1/self._num_workers() for i in range(self._num_workers())]
-        # partitioned_dfs = dataset.random_split(part_fracs, random_state=0)
-        # self.send_data(partitioned_dfs)
-        # self.val_data_fut = self.client.scatter(validation, broadcast=True)
-        # self.features = list(dataset.columns)[:-1]
-        # self.target = list(dataset.columns)[-1]
+        # ETL is still a work in progress
+        """
+        # using dask data frames
+        part_fracs = [1/self._num_workers() for i in range(self._num_workers())]
+        partitioned_dfs = dataset.random_split(part_fracs, random_state=0)
+        self.send_data(partitioned_dfs)
+        self.val_data_fut = self.client.scatter(validation, broadcast=True)
+        self.features = list(dataset.columns)[:-1]
+        self.target = list(dataset.columns)[-1]
+        """
+
+        """
+        # Using dask arrays
+                def load_file(file_name):
+            return np.load(file_name)
+
+
+        def npz_headers(npz):
+            with zipfile.ZipFile(npz) as archive:
+                for name in archive.namelist():
+                    if not name.endswith('.npy'):
+                        continue
+
+                    npy = archive.open(name)
+                    version = np.lib.format.read_magic(npy)
+                    shape, fortran, dtype = np.lib.format._read_array_header(npy, version)
+                    yield name[:-4], shape, dtype
+
+        def read_npz_file(npz_file):
+            npz_ptr = np.load(npz_file)
+            return npz_ptr['dataset_mat']
+
+        npz_read = dask.delayed(read_npz_file)
+        lazy_train_nps = [[npz_read(path), list(npz_headers(path))[0][1], list(npz_headers(path))[0][2]] for path in train_all_paths]
+
+        lazy_val_nps = [[npz_read(path), list(npz_headers(path))[0][1], list(npz_headers(path))[0][2]] for path in val_all_paths]   # Lazily evaluate imread on each path
+        train_dataset = [da.from_delayed(lazy_da_val[0],           # Construct a small Dask array
+                          dtype=lazy_da_val[2],   # for every lazy value
+                          shape=lazy_da_val[1])
+                        for lazy_da_val in lazy_train_nps]
+
+        val_arrays = [da.from_delayed(lazy_da_val[0],           # Construct a small Dask array
+                          dtype=lazy_da_val[2],   # for every lazy value
+                          shape=lazy_da_val[1])
+                        for lazy_da_val in lazy_val_nps]
+
+
+        self.send_data(train_dataset) 
+        """
+        """Using processed parquet files (for the purpose of testing)"""
         self.base_train_path = dataset
         self.base_val_path = validation
         for i in range(self.num_workers):
             self.train_data_paths.append(self.base_train_path + 'train_' + str(i) + '.parquet')
         for i in range(self.num_workers):
             self.valid_data_paths.append(self.base_val_path + 'valid_' + str(i) + '.parquet')
-        # self.val_data_lens = []
-        # self.total_sz_val_data = 0
-        # for val_data in self.valid_data_paths:
-        #     df = dd.read_parquet(val_data)
-        #     labels = df["labels"].compute()
-        #     num_pts = len(labels)
-        #     self.val_data_lens.append(num_pts)
-        #     self.total_sz_val_data += num_pts
-        # print("total sz val data:" + str(self.total_sz_val_data))
-        # print("diff lens val data:" + str(self.val_data_lens))
-        # self.val_data_len_fracs = [float(l)/float(self.total_sz_val_data) for l in self.val_data_lens]
-        # print("diff len frac val data:" + str(self.val_data_len_fracs))
         return {}, {}, {}, {}
 
     def get_metadata_from_parquet(self, store, label_columns=['label'], feature_columns=['features']):
         """
-        Get metadata from existing data in the persistent storage
-        :param store:
-        :param label_columns:
-        :param feature_columns:
+        not using this function
         """
         print('Yet to implement get_metadata_from_parquet')
