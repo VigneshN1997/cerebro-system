@@ -30,7 +30,8 @@ Functions in cerebro/backend/dask/backend.py
 - prepare_data(): Prepare data by writing out into persistent storage
 
 Functions in cerebro/backend/dask/utils.py
-
+- train_model(): called for training one sub epoch on one worker.
+- evaluate_model(): called for evaluating model
 
 
 Install
