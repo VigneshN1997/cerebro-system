@@ -21,6 +21,7 @@ import numpy as np
 import logging
 import traceback
 from ..commons.constants import *
+import time
 
 from .base import ModelSelection, is_larger_better, ModelSelectionResult, _HP, _HPChoice, update_model_results
 from ..db.dao import Model, Metric, ParamVal, ParamDef, Experiment
@@ -46,7 +47,7 @@ class GridSearch(ModelSelection):
     :return: :class:`cerebro.tune.ModelSelectionResult`
     """
 
-    def __init__(self, backend, store, estimator_gen_fn, search_space, num_epochs,
+    def __init__(self, backend, store, search_space, num_epochs, estimator_gen_fn=None,
                  evaluation_metric='loss', validation=0.25, label_columns=['label'], feature_columns=['features'],
                  verbose=1):
         super(GridSearch, self).__init__(backend, store, validation, estimator_gen_fn, evaluation_metric,
@@ -57,6 +58,9 @@ class GridSearch(ModelSelection):
         self._validate_search_space()
 
         self.estimator_param_maps = self._generate_all_param_maps()
+        self.backend.num_models = len(self.estimator_param_maps)
+        self.backend.create_model_checkpoint_paths(len(self.estimator_param_maps))
+        self.backend.get_model_log_file()
         self.num_epochs = num_epochs
 
     def _validate_search_space(self):
@@ -214,31 +218,40 @@ class HILRandomSearch(RandomSearch):
 # Batch implementation (i.e., without any user interaction) of model selection.
 def _fit_on_prepared_data(self, metadata):
     # create estimators
-    estimators = [self._estimator_gen_fn_wrapper(param) for param in self.estimator_param_maps]
-    estimator_results = {model.getRunId(): {} for model in estimators}
+#     estimators = [self._estimator_gen_fn_wrapper(param) for param in self.estimator_param_maps]
+#     estimator_results = {model.getRunId(): {} for model in estimators}
 
     # log hyperparameters to TensorBoard
-    self._log_hp_to_tensorboard(estimators, self.estimator_param_maps)
+#     self._log_hp_to_tensorboard(estimators, self.estimator_param_maps)
 
     # Trains the models up to the number of epochs specified. For each iteration also performs validation
     for epoch in range(self.num_epochs):
-        epoch_results = self.backend.train_for_one_epoch(estimators, self.store, self.feature_cols,
-                                                         self.label_cols)
-        update_model_results(estimator_results, epoch_results)
+        # print("I ran")
+        start = time.time()
+        epoch_results = self.backend.train_for_one_epoch(self.estimator_param_maps, self.store, self.feature_cols,
+                                                          self.label_cols)
+#         update_model_results(estimator_results, epoch_results)
+        self.backend.validate_models_one_epoch(self.estimator_param_maps)
+        finish = time.time()
+        log = [epoch, start, finish]
+        with open(self.backend.epoch_times_path, 'a') as f:
+        for param in log:
+            f.write("%s, " % str(param))
+        f.write("\n")
 
-        epoch_results = self.backend.train_for_one_epoch(estimators, self.store, self.feature_cols,
-                                                         self.label_cols, is_train=False)
-        update_model_results(estimator_results, epoch_results)
+#         epoch_results = self.backend.train_for_one_epoch(estimators, self.store, self.feature_cols,
+#                                                          self.label_cols, is_train=False)
+#         update_model_results(estimator_results, epoch_results)
 
-        self._log_epoch_metrics_to_tensorboard(estimators, estimator_results)
+#         self._log_epoch_metrics_to_tensorboard(estimators, estimator_results)
 
     # find the best model and crate ModelSearchModel
-    models = [est.create_model(estimator_results[est.getRunId()], est.getRunId(), metadata) for est in estimators]
-    val_metrics = [estimator_results[est.getRunId()]['val_' + self.evaluation_metric][-1] for est in estimators]
-    best_model_idx = np.argmax(val_metrics) if is_larger_better(self.evaluation_metric) else np.argmin(val_metrics)
-    best_model = models[best_model_idx]
-
-    return ModelSelectionResult(best_model, estimator_results, models, [x+'__output' for x in self.label_cols])
+#     models = [est.create_model(estimator_results[est.getRunId()], est.getRunId(), metadata) for est in estimators]
+#     val_metrics = [estimator_results[est.getRunId()]['val_' + self.evaluation_metric][-1] for est in estimators]
+#     best_model_idx = np.argmax(val_metrics) if is_larger_better(self.evaluation_metric) else np.argmin(val_metrics)
+#     best_model = models[best_model_idx]
+    return {} 
+#     return ModelSelectionResult(best_model, estimator_results, models, [x+'__output' for x in self.label_cols])
 
 
 # Human-in-the-loop implementation

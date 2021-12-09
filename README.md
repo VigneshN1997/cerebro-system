@@ -7,6 +7,33 @@ resource-efficient manner. Detailed technical information about ``Cerebro`` can 
 [Technical Report](https://adalabucsd.github.io/papers/TR_2020_Cerebro.pdf).
 
 
+Cerebro-Dask
+=======
+
+Cerebro is integrated with Dask. This support is extended in the [execution layer](https://github.com/ADALabUCSD/cerebro-system/wiki/Execution-Layer#execution-layer) of Cerebro.
+
+The Dask backend first initializes the dask client (given the scheduler address/dask scheduler). (__init__)
+
+
+Functions in cerebro/backend/dask/backend.py
+- _num_workers() : Returns the number of workers to use for training.
+- initialize_workers(): Get the worker IPs using the Dask client.
+- initialize_data_loaders(): in dask context, this function is used to initializing the data structures for the random scheduler
+- create_model_checkpoint_paths(): Initialize model checkpoint file paths
+- get_runnable_model(): for a worker get a runnable model (idle model)
+- init_log_files(): initialize the log file paths for logging model execution times on workers, sub epoch losses, accuracies
+- get_model_log_file(): initialize the model log file paths for logging model validation losses and accuracies
+- validate_models_one_epoch(): model validation performed using task parallelism
+- train_for_one_epoch(): Takes a set of Keras model configs and trains for one epoch using Model Hopping Parallelism
+- teardown_workers(): shutdown dask client
+- send_data(): Given partitioned dataframes, send each partition to one worker
+- prepare_data(): Prepare data by writing out into persistent storage
+
+Functions in cerebro/backend/dask/utils.py
+- train_model(): called for training one sub epoch on one worker.
+- evaluate_model(): called for evaluating model
+
+
 Install
 -------
 
