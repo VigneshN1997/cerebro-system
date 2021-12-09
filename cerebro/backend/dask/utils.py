@@ -13,7 +13,7 @@ def get_data_reader(train_file_path):
     petastorm_dataset_url = "file://" + train_file_path
     reader = make_batch_reader(petastorm_dataset_url)
 
-def train_model(model_checkpoint_file, train_file_path, estimator_gen_fn, model_config, log_files, model_name, worker):
+def train_model(model_checkpoint_file, train_data, estimator_gen_fn, model_config, log_files, model_name, worker):
     """
     trail model function called for training one sub epoch (one model run on one data shard)
     :param model_checkpoint_file : model checkpoint file path to load model from
@@ -30,22 +30,29 @@ def train_model(model_checkpoint_file, train_file_path, estimator_gen_fn, model_
     logs = []
     model = estimator_gen_fn(model_config)
     print("Model name: " + str(model_name) +" Worker: " + str(worker) + " Config: " + str(model.optimizer.get_config()))
-    print("train_file:" + str(train_file_path))
+    # print("train_file:" + str(train_data))
     if(os.path.isfile(model_checkpoint_file)):
         model = tf.keras.models.load_model(model_checkpoint_file)
-    
-    petastorm_dataset_url = "file://" + train_file_path
-    res = None
-    etl_log = ""
-    etl_st = time.time()
-    with make_batch_reader(petastorm_dataset_url, num_epochs=1) as reader:
-        dataset = make_petastorm_dataset(reader)
-        etl_en = time.time()
-        # print("etl st:" + str(etl_st) + " etl_en:" + str(etl_en))
-        etl_log = "etl st:" + str(etl_st) + " etl_en:" + str(etl_en)
-        print("batch_size:" + str(model_config["batch_size"]) + " for config:" + str(model_config))
-        res = model.fit(dataset, epochs=1, verbose=1, batch_size=model_config["batch_size"])
-        model.save(model_checkpoint_file)
+    numeric_feature_names = list(data_ddf.columns)[:784]
+    pd_df = data_ddf.compute()
+    target = pd_df.pop(list(data_ddf.columns)[-1])
+    numeric_features = pd_df[numeric_feature_names].astype(float)
+    tf.convert_to_tensor(numeric_features)
+
+    res = model.fit(numeric_features, target, epochs=1)
+
+    # petastorm_dataset_url = "file://" + train_data
+    # res = None
+    # etl_log = ""
+    # etl_st = time.time()
+    # with make_batch_reader(petastorm_dataset_url, num_epochs=1) as reader:
+    #     dataset = make_petastorm_dataset(reader)
+    #     etl_en = time.time()
+    #     # print("etl st:" + str(etl_st) + " etl_en:" + str(etl_en))
+    #     etl_log = "etl st:" + str(etl_st) + " etl_en:" + str(etl_en)
+    #     print("batch_size:" + str(model_config["batch_size"]) + " for config:" + str(model_config))
+    #     res = model.fit(dataset, epochs=1, verbose=1, batch_size=model_config["batch_size"])
+    #     model.save(model_checkpoint_file)
 
     # res = model.fit(dataset, epochs=1)
     # logs.append(str(res.history))
@@ -64,7 +71,7 @@ def train_model(model_checkpoint_file, train_file_path, estimator_gen_fn, model_
             f.write("%s, " % str(param))
         f.write("\n")
 
-def evaluate_model(model_cpkt_file, validation_data_paths, model_log_file):
+def evaluate_model(model_cpkt_file, validation_data, model_log_file):
     """
     validate model function called for evaluating model on complete validation dataset
     :param model_checkpoint_file : model checkpoint file path to load model from
@@ -76,10 +83,16 @@ def evaluate_model(model_cpkt_file, validation_data_paths, model_log_file):
     :param worker: worker number (needed for logging and testing)
     """
     model = tf.keras.models.load_model(model_cpkt_file)
-    petastorm_dataset_urls = ["file://" + vp for vp in validation_data_paths]
-    with make_batch_reader(petastorm_dataset_urls) as reader:
-        dataset = make_petastorm_dataset(reader)
-        results = model.evaluate(dataset)
+    petastorm_dataset_urls = ["file://" + vp for vp in validation_data]
+    val_pd_df = validation_data_ddf.compute()
+    numeric_feature_names = list(val_pd_df.columns)[:784]
+    target = val_pd_df.pop(list(val_pd_df.columns)[-1])
+    numeric_features = val_pd_df[numeric_feature_names].astype(float)
+    results = model.evaluate(val_pd_df, target)
+
+    # with make_batch_reader(petastorm_dataset_urls) as reader:
+    #     dataset = make_petastorm_dataset(reader)
+    #     results = model.evaluate(dataset)
     with open(model_log_file, 'a') as f:
         for l in results:
             f.write("%s, " % str(l))

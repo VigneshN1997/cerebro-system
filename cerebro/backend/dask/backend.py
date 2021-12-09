@@ -223,7 +223,7 @@ class DaskBackend(Backend):
                         if(not os.path.isfile(self.model_checkpoint_paths[m])):
                             print("training the model file for first time:" + self.model_checkpoint_paths[m])
                         # model sub epoch training submitted to a worker
-                        future = self.client.submit(train_model, self.model_checkpoint_paths[m], self.train_data_paths[w],self.estimator_gen_fn, model_configs[m], self.log_file_paths[w], str(m), str(w), workers=self.worker_id_ip_dict[w])
+                        future = self.client.submit(train_model, self.model_checkpoint_paths[m], self.data_mapping['data_w'+str(w)],self.estimator_gen_fn, model_configs[m], self.log_file_paths[w], str(m), str(w), workers=self.worker_id_ip_dict[w])
                         self.model_worker_run_dict[m] = [w, future]
                         self.worker_model_run_dict[w] = [m, future]
                         # print('model assigned:' + str(m) + ' on worker:' + str(w) + ' status:' + future.status)
@@ -266,8 +266,6 @@ class DaskBackend(Backend):
         :param compress_sparse:
         :param verbose:
         """
-        # ETL is still a work in progress
-        """
         # using dask data frames
         part_fracs = [1/self._num_workers() for i in range(self._num_workers())]
         partitioned_dfs = dataset.random_split(part_fracs, random_state=0)
@@ -275,7 +273,7 @@ class DaskBackend(Backend):
         self.val_data_fut = self.client.scatter(validation, broadcast=True)
         self.features = list(dataset.columns)[:-1]
         self.target = list(dataset.columns)[-1]
-        """
+        
 
         """
         # Using dask arrays
@@ -315,13 +313,15 @@ class DaskBackend(Backend):
 
         self.send_data(train_dataset) 
         """
-        """Using processed parquet files (for the purpose of testing)"""
+        """
+        # Using processed parquet files (for the purpose of testing)
         self.base_train_path = dataset
         self.base_val_path = validation
         for i in range(self.num_workers):
             self.train_data_paths.append(self.base_train_path + 'train_' + str(i) + '.parquet')
         for i in range(self.num_workers):
             self.valid_data_paths.append(self.base_val_path + 'valid_' + str(i) + '.parquet')
+        """
         return {}, {}, {}, {}
 
     def get_metadata_from_parquet(self, store, label_columns=['label'], feature_columns=['features']):
